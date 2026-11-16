@@ -1,1076 +1,535 @@
-# PyCleaner
+PyCleaner
 
-> A cross-platform duplicate finder and Windows maintenance toolkit — with a
-> quarantine-first safety model, a plugin architecture for adding new cleaners,
-> and a headless CLI for testing every cleaner without touching a real system.
+A cross-platform duplicate file finder and Windows maintenance toolkit.
 
-**16 cleaners. Zero silent deletes. Every destructive action reversible from
-the Trash tab.**
+PyCleaner is a safety-focused computer cleaning utility built with Python and Tkinter. It helps you identify duplicate files, remove unnecessary clutter, manage startup applications, and inspect Windows maintenance items.
 
----
+Unlike traditional PC cleaners, PyCleaner uses a quarantine-first approach: files are moved to a recoverable location instead of being permanently deleted.
 
-## Table of contents
+16 cleaners. Zero silent deletes. Every quarantined file can be restored.
 
-- [Why another cleaner?](#why-another-cleaner)
-- [Safety model](#safety-model)
-- [Features](#features)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Quick start](#quick-start)
-- [The interface](#the-interface)
-- [Cleaners reference](#cleaners-reference)
-  - [Duplicate files](#duplicate-files)
-  - [Empty folders](#empty-folders)
-  - [Empty files](#empty-files)
-  - [Junk by name](#junk-by-name)
-  - [Old files](#old-files)
-  - [Large files](#large-files)
-  - [Temp & cache](#temp--cache)
-  - [Downloads triage](#downloads-triage)
-  - [Similar images](#similar-images)
-  - [Startup apps](#startup-apps)
-  - [Programs](#programs)
-  - [Scheduled tasks](#scheduled-tasks)
-  - [Services](#services)
-  - [Store apps](#store-apps)
-  - [Broken shortcuts](#broken-shortcuts)
-  - [Recycle bin](#recycle-bin)
-- [Command-line usage](#command-line-usage)
-- [The trash / quarantine](#the-trash--quarantine)
-- [Configuration files](#configuration-files)
-- [Architecture](#architecture)
-- [Extending PyCleaner](#extending-pycleaner)
-- [Troubleshooting](#troubleshooting)
-- [FAQ](#faq)
-- [Known limitations & non-goals](#known-limitations--non-goals)
-- [Changelog](#changelog)
-- [License](#license)
+Features
+Feature	Platform	Description
+Duplicate Files	Cross-platform	Find duplicates using file size and SHA-256 hashing
+Empty Folders	Cross-platform	Find empty directories, including nested folders
+Empty Files	Cross-platform	Find zero-byte files
+Junk Files	Cross-platform	Identify temporary files and common junk
+Old Files	Cross-platform	Find files based on modification age
+Large Files	Cross-platform	Locate files above a configurable size
+Temp & Cache	Cross-platform	Find temporary files and cache data
+Downloads Triage	Cross-platform	Organise downloads by file type and age
+Similar Images	Cross-platform	Find visually similar images using perceptual hashing
+Startup Apps	Windows	View and manage startup applications
+Installed Programs	Windows	Browse installed applications and launch uninstallers
+Scheduled Tasks	Windows	View scheduled tasks
+Services	Windows	View Windows services
+Microsoft Store Apps	Windows	Manage selected AppX packages
+Broken Shortcuts	Windows	Find shortcuts pointing to missing files
+Recycle Bin	Windows	View and empty the Windows Recycle Bin
 
----
+Total: 16 cleaners — 9 cross-platform and 7 Windows-only.
 
-## Why another cleaner?
+Safety First
 
-Because most "PC cleaners" are snake oil. They warn about "1,247 problems"
-that turn out to be cached thumbnails, they delete things silently, and
-their "optimise" buttons trade real stability for a placebo.
+PyCleaner is designed to minimise accidental data loss.
 
-PyCleaner takes the opposite stance:
+1. Quarantine instead of permanent deletion
 
-- **Nothing is deleted.** Files move to a real quarantine folder with a
-  JSON manifest. Restore is one click. Auto-purge after 30 days (configurable).
-- **Nothing is silent.** Every action shows a confirmation dialog with the
-  count, total size, and destination.
-- **Nothing is guessed.** The Windows modules use the same mechanisms
-  Task Manager uses (`StartupApproved`), the same allowlist discipline
-  Microsoft's own "Apps & Features" uses, and launch vendor uninstallers
-  rather than calling silent `/S` flags.
-- **Nothing is a black box.** Every cleaner is ~60–150 lines of Python.
-  Read them, audit them, extend them.
-- **Registry is off-limits.** No "registry cleaner." Ever.
+Files are moved into a dedicated quarantine directory:
 
-If you want a "BOOST PC 400%" button, this isn't for you. If you want a tool
-you can hand to your parents without losing data, it is.
+Windows: %APPDATA%\PyCleaner\trash
+Linux/macOS: ~/.config/PyCleaner/trash
 
----
+Each quarantine session receives its own folder containing a JSON manifest.
 
-## Safety model
+The manifest records:
 
-Three layers, applied to every action:
+Original file location.
+Quarantined filename.
+File size.
+File or directory type.
+Cleaner responsible for the action.
 
-### 1. Quarantine, not delete
+Files can be restored through the Trash tab.
 
-C:\Users\you\Downloads\report.pdf
-│
-└──moved──> %APPDATA%\PyCleaner\trash\20240115-093217\report.pdf
-text
+2. Protected system locations
 
+PyCleaner prevents cleaners from modifying important system directories, including:
 
-Alongside each stamp folder, a `manifest.json` records the original absolute
-path, size, kind (file/dir), and which cleaner touched it. The Trash tab
-lists every stamp with **Restore**, **Purge**, and a configurable
-**auto-purge older than N days**.
+C:\Windows
+C:\Program Files
+C:\Program Files (x86)
+C:\ProgramData\Microsoft
+C:\Users\Default
+C:\$Recycle.Bin
 
-Restore moves files back to their original path; if the path is occupied,
-the conflict is reported and the item stays in quarantine.
+The application also protects its own configuration and quarantine directories.
 
-### 2. Protected paths
+3. Dry-run mode
 
-Every cleaner consults `is_protected(path, root)` before returning an item.
-It refuses to touch:
+Each cleaner supports a dry-run option.
 
-- Anything under `C:\Windows`, `C:\Program Files`, `C:\Program Files (x86)`,
-  `C:\ProgramData\Microsoft`, `C:\Users\Default`, `C:\$Recycle.Bin`
-- Anything outside the selected scan root (when one is chosen)
-- The app's own config and quarantine directories
+Dry-run mode allows you to:
 
-A warning dialog lets you override the outside-root check, but never the
-system-path check.
+Scan files.
+Review selected items.
+View confirmation dialogs.
+Preview the actions that would be performed.
 
-### 3. Dry run
+No files are modified during a dry run.
 
-A per-tab checkbox runs the entire workflow — confirmations, progress,
-result dialog — without touching a single byte. The dialog text says
-"(Dry run — nothing will be changed.)" and the summary reports
-`Would apply: N item(s)`. Use this before any mass deletion.
+4. Action logging
 
-### Plus
+Actions are recorded in:
 
-- **Per-tab threading.** Scans and hashes run on a worker thread with
-  progress and a Cancel button. The UI never hangs.
-- **Every action logged.** `%APPDATA%\PyCleaner\actions.log` — timestamp,
-  cleaner id, path, result.
-- **Curated allowlists.** Store apps and startup entries are gated on
-  explicit lists, not regex guesses.
+%APPDATA%\PyCleaner\actions.log
 
----
+This provides an audit trail of quarantine, restore, purge, and other supported operations.
 
-## Features
+Requirements
+Python 3.10 or newer.
+Tkinter.
+Windows for Windows-specific cleaners.
+PowerShell 3.0 or newer for Windows maintenance features.
 
-| | Feature | Platform | Requires |
-|---|---|---|---|
-| 🗂 | **Duplicate files** — content (size+SHA-256) or same-name matching | Any | — |
-| 📁 | **Empty folders** — iterative nested-empty detection | Any | — |
-| 📄 | **Empty files** — with skip-list for `.gitkeep`, `.nomedia` | Any | — |
-| 🧹 | **Junk by name** — `Thumbs.db`, `.DS_Store`, `*.tmp`, Office locks | Any | — |
-| ⏰ | **Old files** — by modification age | Any | — |
-| 🐘 | **Large files** — by size threshold | Any | — |
-| 🌡 | **Temp & cache** — OS temp + user cache | Any | — |
-| 📥 | **Downloads triage** — group `~/Downloads` by type + age | Any | — |
-| 🖼 | **Similar images** — perceptual hash (dHash) + BK-tree clustering | Any | `Pillow`, `imagehash` |
-| 🚀 | **Startup apps** — reversible enable/disable via `StartupApproved` | Windows | — |
-| 📦 | **Programs** — enumerate uninstallers, launch vendor GUI | Windows | — |
-| 🗓 | **Scheduled tasks** — read-only viewer | Windows | — |
-| ⚙ | **Services** — read-only viewer | Windows | — |
-| 🏪 | **Store apps** — curated AppX removal + provisioned removal | Windows | Admin for deprovision |
-| 🔗 | **Broken shortcuts** — `.lnk` files with missing targets | Windows | — |
-| 🗑 | **Recycle bin** — view + empty | Windows | `winshell` |
+Tkinter is included with most standard Python installations.
 
-Total: 16 cleaners. 9 cross-platform, 7 Windows-only.
+On Debian/Ubuntu, install it with:
 
----
-
-## Requirements
-
-- **Python 3.10+** (uses `X | Y` type unions, `pathlib.Path.is_relative_to`)
-- **Tkinter** (ships with CPython on Windows and macOS; `sudo apt install
-  python3-tk` on Debian/Ubuntu)
-- **PowerShell 3+** for the Windows apps module (built into Windows 8+)
-
-### Optional dependencies
-
-Only required if you want the corresponding cleaner. Missing deps cause that
-tab to be silently omitted — the Settings tab tells you what to install.
-
-```bash
-pip install Pillow imagehash   # Similar images
-pip install winshell           # Recycle bin
-
-Or all at once:
 bash
+sudo apt install python3-tk
 
-pip install "PyCleaner[optional]"   # if published
-# or
+Optional dependencies
+
+Some cleaners require additional packages.
+
+Package	Feature
+Pillow	Similar Images
+imagehash	Similar Images
+winshell	Windows Recycle Bin
+
+Install them with:
+
+bash
 pip install Pillow imagehash winshell
 
 Installation
-From source (recommended)
+1. Clone the repository
 bash
+git clone https://github.com/JacobAFoster/computer-cleaner.git
+cd computer-cleaner
 
-git clone https://github.com/you/pycleaner.git
-cd pycleaner
+2. Create a virtual environment (recommended)
 
-# Optional: virtual environment
+Windows:
+
+powershell
 python -m venv .venv
-.venv\Scripts\activate       # Windows
-source .venv/bin/activate    # macOS / Linux
+.venv\Scripts\activate
 
-# Optional dependencies
+
+Linux/macOS:
+
+bash
+python3 -m venv .venv
+source .venv/bin/activate
+
+3. Install optional dependencies
+bash
 pip install Pillow imagehash winshell
 
-python cleaner.py
-
-As a single file
-
-cleaner.py is self-contained. Copy it anywhere and run it. First launch
-creates %APPDATA%\PyCleaner (Windows) or ~/.config/PyCleaner (POSIX).
-As a frozen executable (Windows)
+4. Run PyCleaner
 bash
+python main.py
 
-pip install pyinstaller
-pyinstaller --onefile --windowed --name PyCleaner cleaner.py
+Quick Start
+Launch PyCleaner using python main.py.
+Select the cleaner you want to use.
+Choose a folder to scan, where applicable.
+Configure the cleaner's options.
+Click Scan.
+Review the results and select the items you want to process.
+Click the appropriate action button.
+Confirm the operation.
 
-The resulting dist/PyCleaner.exe is admin-aware; the "Relaunch as admin"
-button in the Store apps tab uses ShellExecuteW runas and works from a
-frozen binary.
-Quick start
+Files processed by the quarantine-enabled cleaners are moved into quarantine rather than permanently deleted.
 
-    Launch. python cleaner.py — the notebook opens on Duplicate files.
+You can restore quarantined files from the Trash tab.
 
-    Pick a folder. Click Choose folder… and select the tree you want to
-    examine. Start small — a Downloads or Pictures folder — not C:\.
+Tip: Start by scanning your Downloads folder or another directory containing files you recognise.
 
-    Scan. Click Scan. Progress shows in the status bar; Cancel stops
-    cleanly (the worker thread returns early on the next file).
+The Interface
 
-    Review. Groups are shown as parent rows with individual files nested
-    beneath. Click the checkbox column (☐ / ☑) to toggle. Space toggles
-    the selection. Right-click a parent row for Keep newest — check others
-    and friends.
+PyCleaner uses a tabbed Tkinter interface.
 
-    Delete. Delete checked… confirms count, size, and destination. Files
-    move to quarantine, not oblivion.
+Available sections include:
 
-    Restore (if you need to). Switch to the Trash tab. Select the
-    stamp, click Restore selected. Files return to their original paths.
+Cleaner tabs for individual maintenance operations.
+Trash for restoring or purging quarantined files.
+Settings for configuring cleaner behaviour.
 
-The interface
-text
+Additional interface features include:
 
-┌───────────────────────────────────────────────────────────────┐
-│ Duplicate files │ Empty folders │ Empty files │ Junk │ … │ Trash │ Settings │
-├───────────────────────────────────────────────────────────────┤
-│ [Choose folder…] C:\Users\you\Downloads                       │
-│ ☑ Recursive  ☐ Follow symlinks  ☐ Include hidden  ☐ Dry run  [Scan] [Cancel] │
-│ Scanning… 1,247 files                                         │
-├───────────────────────────────────────────────────────────────┤
-│          │ Name / Path                │ Size   │ Modified │ Note   │
-│ 📁 2×     │ report.docx                │ 2 copies · 1.2 MB each      │
-│   ☑      │ 2024/report.docx           │ 1.2 MB │ 2024-01-15 09:12 │   │
-│   ☐      │ backup/report.docx         │ 1.2 MB │ 2024-01-14 22:01 │   │
-│   (preview pane on the right when the cleaner supports it)        │
-├───────────────────────────────────────────────────────────────┤
-│ [Uncheck all] [Check all] [Delete checked…] [Reset columns]       │
-│                          3 groups · 2 selected · 2.4 MB to free   │
-└───────────────────────────────────────────────────────────────┘
+Background scanning.
+Progress reporting.
+Scan cancellation.
+File selection and bulk selection.
+Configurable columns.
+Right-click actions for duplicate groups.
+Image previews for similar images.
+Dry-run mode.
 
-Column resizing is persisted per cleaner in columns_<id>.json. Double-click
-a column header to auto-fit. Reset columns restores defaults.
+Column widths are saved individually for each cleaner.
 
-The #0 column is the checkbox — clicking anywhere else on the row does
-nothing (avoids accidental toggles when selecting text).
+Cleaner Details
+Duplicate Files
 
-Right-click menu (dedupe only): Keep newest / oldest / largest / smallest
-— check others, plus Uncheck group and Check whole group.
+Finds files with identical contents using file size and SHA-256 hashing.
 
-Preview pane (Similar images): appears on the right when the cleaner
-provides one. Select a row to load a thumbnail; images over 50 MB show
-(image too large to preview) instead of stalling.
-Cleaners reference
-Duplicate files
+Two scan modes are available:
 
-id dedupe · platform any · default mode content
+Mode	Description
+Content	Compares file sizes and SHA-256 hashes
+Name	Groups files by matching filename
 
-Finds files with identical bytes. Two modes:
-Mode	What it does	When to use
-content (default)	Bucket by size, then SHA-256 within each bucket	Catches same-bytes/different-name duplicates; the common case
-name	Group by filename (case-insensitive), no hashing	Fast, when you trust the naming
+Content mode is recommended for identifying genuine duplicates.
 
-Content mode is fast because different-sized files can't be identical — most
-files are eliminated before the first byte is read.
+Empty Folders
 
-Files larger than Max file size to hash (MB) (default 200) are grouped
-under unverified:<size> with a too large to hash note. Raise the limit in
-Settings, or use the name mode.
+Finds empty directories, including nested empty directories.
 
-Verify content re-hashes files whose mtime changed since the last hash.
-Normal scans already hash everything, so this is mostly a no-op — use it
-when you've scanned with a low limit and later want to verify large files.
+Empty Files
 
-Settings: dedupe_mode, hash_limit_mb.
-Empty folders
+Identifies files with a size of zero bytes.
 
-id empty_folders · platform any · auto-checks
+Common placeholder files, such as .gitkeep and .nomedia, are excluded.
 
-Directories with no files or subdirectories, after iteratively removing
-nested empties. Detects chains like a/b/c/d where d is empty — all four
-are reported.
+Junk Files
 
-Exclusions: .dedupe_trash, protected system paths, hidden directories
-(unless Include hidden is on).
+Identifies files matching configurable patterns, including:
 
-Restore: mkdir -p on the original path. Fails safely if the parent
-doesn't exist yet (restore in reverse depth order; the manifest is FIFO so
-restoring a whole stamp works correctly).
-Empty files
+Thumbs.db
+desktop.ini
+.DS_Store
+*.tmp
+*.bak
+*.crdownload
+*.partial
+Old Files
 
-id empty_files · platform any · auto-checks
+Finds files based on their last modification date.
 
-Files with size == 0. Skips .gitkeep, .nomedia, .keep, .placeholder,
-.gitignore, and *.lock.
-Junk by name
+The default threshold is 365 days.
 
-id junk · platform any · auto-checks
+Large Files
 
-Files matching a pattern list:
-text
+Finds files exceeding a configurable size threshold.
 
-Thumbs.db  desktop.ini  .DS_Store  .Spotlight-V100  ehthumbs.db
-~$*  *.tmp  *.bak  *.crdownload  *.part  *.partial  *.download
+The default threshold is 500 MB.
 
-Editable in Settings → Junk patterns. Empty text area = use the defaults.
-Any non-empty list replaces them.
-Old files
+Temp & Cache
 
-id old · platform any
+Scans common temporary and cache directories.
 
-Files whose mtime is older than N days (default 365). Sorted by size
-descending so the biggest wins appear first. Each row shows its age in days.
+Windows:
 
-Option: min_days.
-Large files
+%TEMP%
+%LOCALAPPDATA%\Temp
 
-id large · platform any
+Linux/macOS:
 
-Files over N MB (default 500). Sorted by size descending. A flat list —
-no grouping, no duplicate detection.
+System temporary directory.
+~/.cache
+Downloads Triage
 
-Option: min_mb.
-Temp & cache
+Groups files in your Downloads directory by category:
 
-id temp · platform any
+Installers
+Archives
+Documents
+Images
+Media
+Code
+Other
 
-Files in:
+This cleaner is designed for reviewing downloads rather than automatically selecting files for removal.
 
-    Windows: %TEMP% and %LOCALAPPDATA%\Temp
+Similar Images
 
-    POSIX: tempfile.gettempdir() (usually /tmp) and ~/.cache
+Uses perceptual hashing to identify visually similar images.
 
-In-use files will fail to move (Windows lock) or disappear from under the
-scan (POSIX unlink); each is reported individually rather than aborting the
-run. This is expected — close apps before scanning if you want a clean result.
-Downloads triage
+Supported detection includes:
 
-id downloads · platform any
+Resized images.
+Re-encoded images.
+Watermarked images.
+Similar image variations.
 
-Groups ~/Downloads (non-recursively by default) into:
-Category	Extensions
-Installer	.exe .msi .dmg .pkg .deb .rpm .appimage
-Archive	.zip .rar .7z .tar .gz .bz2 .xz .tgz
-Document	.pdf .doc .docx .xls .xlsx .ppt .pptx .txt .md .rtf .odt
-Image	.jpg .jpeg .png .gif .bmp .webp .tif .tiff .heic .svg
-Media	.mp3 .mp4 .mov .avi .mkv .wav .flac .m4a .m4v .webm
-Code	.py .js .ts .html .css .json .xml .yaml .yml .sh .bat .ps1 .rs .go
-Other	everything else
+Uses Difference Hashing (dHash) and BK-tree clustering.
 
-Sorted by category then age. Nothing is auto-checked — this is a
-review tool, not a bulk-delete tool.
+Requires:
 
-Option: include_hidden.
-Similar images
+bash
+pip install Pillow imagehash
 
-id similar_images · platform any · deps Pillow, imagehash
+Startup Apps
 
-Finds images that look alike but aren't byte-identical (resized, re-encoded,
-watermarked, or cropped). Uses dHash (64-bit perceptual hash) with a configurable
-Hamming-distance threshold (default 8, ~87 % visual similarity).
+Windows-only.
 
-Images are clustered with a BK-tree: each new image joins the first existing
-cluster within threshold. This produces small, tight groups — good for visual
-review — rather than mathematically ideal connected components.
+Displays applications configured to launch during startup.
 
-A preview pane on the right shows a thumbnail of the selected image.
-Select multiple rows or use Check all — but review each one visually. This
-is the one cleaner where blind bulk deletion is genuinely dangerous.
+Supports enabling and disabling startup entries using Windows' StartupApproved mechanism.
 
-Options: threshold (0–20; lower = stricter), min_kb (skip tiny images).
-Startup apps
+Installed Programs
 
-id startup · platform Windows
+Windows-only.
 
-Enumerates four sources:
+Lists installed applications and allows you to launch their registered uninstallers.
 
-    HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+PyCleaner launches the vendor's uninstall interface rather than silently uninstalling applications.
 
-    HKLM\Software\Microsoft\Windows\CurrentVersion\Run (64-bit view)
+Scheduled Tasks
 
-    HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run (32-bit)
+Windows-only.
 
-    Startup folders: %APPDATA%\…\Startup and %ProgramData%\…\Startup
+Provides a read-only overview of scheduled Windows tasks.
 
-Actions: Disable checked / Enable checked.
-
-The mechanism is the same one Task Manager uses: writes a 12-byte REG_BINARY
-under HKCU\…\Explorer\StartupApproved\{Run|Run32|StartupFolder}. Byte 0 of
-0x02 = enabled, 0x03 = disabled. The Run value is never deleted — you
-can always toggle it back. No admin required, even for HKLM entries, because
-StartupApproved is per-user.
-
-NOT a delete operation. After applying, rows stay in the tree with the
-updated state. Click Scan to refresh if you want.
-Programs
-
-id programs · platform Windows
-
-Enumerates installed programs from:
-
-    HKLM\…\Uninstall (64-bit)
-
-    HKLM\WOW6432Node\…\Uninstall (32-bit)
-
-    HKCU\…\Uninstall (per-user)
-
-Filters out entries with SystemComponent=1 (OS components) or ParentKeyName
-(updates/patches), and entries without a DisplayName.
-
-Action: Uninstall checked launches the vendor's registered
-UninstallString via Popen. The vendor's own UI runs. We never call
-QuietUninstallString or add /S. Silent uninstalls are how people lose
-data.
-
-The tree is not refreshed automatically — click Scan after the uninstaller
-finishes. This is intentional: waiting synchronously would hang the app for
-minutes, and refreshing mid-uninstall would show stale data.
-Scheduled tasks
-
-id tasks · platform Windows · read-only
-
-Lists scheduled tasks via PowerShell Get-ScheduledTask. Filters out
-\Microsoft\Windows\* by default; toggle Show Microsoft tasks to include
-them.
-
-Viewer only. Disabling services and tasks is a support nightmare and out
-of scope. Use taskschd.msc or services.msc for that.
 Services
 
-id services · platform Windows · read-only
+Windows-only.
 
-Lists services via PowerShell Get-Service. Shows name, status, start type,
-and display name.
+Displays Windows services, including their status and startup type.
 
-Viewer only. Use services.msc to change service state.
-Store apps
+This cleaner is read-only.
 
-id appx · platform Windows · admin recommended (required for deprovision)
+Microsoft Store Apps
 
-Removes AppX packages (Store apps). Gated on a curated allowlist — a
-package that isn't in the list never appears in the tree.
+Windows-only.
 
-The default allowlist is risk-tiered:
+Displays selected Microsoft Store applications using a curated allowlist.
 
-    low (auto-checked) — Bing apps, Solitaire, Zune, Skype, Feedback Hub,
-    Candy Crush, Disney apps, Spotify, etc.
+Packages are categorised by risk level.
 
-    medium (amber text) — Calculator, Photos, Camera, Xbox app, Snip &
-    Sketch, Edge.
+Some removal operations require administrator privileges.
 
-    high (red text) — Store itself, DesktopAppInstaller (winget), HEIF /
-    VP9 / WebP codecs. The confirmation dialog counts them and warns.
+Broken Shortcuts
 
-Two actions, two scopes:
-Action	PowerShell	Admin?	Reversible?
-Remove checked	Remove-AppxPackage -Package …	No	Yes — reinstall from Store
-Remove provisioned	Remove-AppxProvisionedPackage -Online	Yes	No — reinstalls for new users only via reinstall
+Windows-only.
 
-Removing a package for your account works without admin. Deprovisioning (so
-new users don't get it pre-installed) requires admin. The banner appears
-automatically; click Relaunch as admin to restart elevated.
+Identifies .lnk shortcuts whose target files no longer exist.
 
-Customizing the allowlist: copy APPX_ALLOWLIST_DEFAULT from the source
-into %APPDATA%\PyCleaner\appx_allowlist.json and edit. Format:
-json
+Recycle Bin
 
-[
-  {"pattern": "Microsoft.BingNews", "risk": "low", "label": "Bing News"},
-  {"pattern": "king.com.*", "risk": "low", "label": "King games"},
-  {"pattern": "Microsoft.WindowsStore", "risk": "high", "label": "Store"}
-]
+Windows-only.
 
-Patterns match against Name or PackageFamilyName via fnmatch.
+Displays Recycle Bin contents and provides an option to empty the bin.
 
-Never remove framework packages (Microsoft.VCLibs, Microsoft.NET.Native.*,
-Microsoft.WindowsAppRuntime.*) or shell dependencies. They're not in the
-allowlist, and adding them will break Windows in confusing ways.
-Broken shortcuts
+Requires:
 
-id broken_shortcuts · platform Windows
-
-Finds .lnk files whose target no longer exists. Resolves targets via
-PowerShell WScript.Shell — one batch call for the whole scan (a temp file
-lists the shortcuts, PowerShell writes path\ttarget back).
-
-Filters out:
-
-    URL shortcuts (http:, https:, steam://, uplay://)
-
-    Settings links (ms-, shell:)
-
-    MSI-advertised targets ({GUID} form)
-
-Expands environment variables before checking. Reports missing targets in the
-Note column.
-Recycle bin
-
-id recycle · platform Windows · deps winshell
-
-Lists the contents of the Windows Recycle Bin (original path, size, deletion
-time).
-
-Action: Empty Recycle Bin… — a single bulk action that empties the
-entire bin. Windows' recycle-bin API doesn't support per-item deletion from
-third-party code, so this is all-or-nothing.
-
-Individual restore stays in Explorer (right-click → Restore). The in-app
-Trash tab handles PyCleaner's own quarantine, not the Windows Recycle
-Bin — they're different folders.
-Command-line usage
-
-The GUI is the primary interface, but every cleaner is headless-testable. This
-is how you validate a cleaner on a fixture directory before running it against
-your real system.
 bash
+pip install winshell
 
-# List all cleaners with availability and platform
-python cleaner.py --list
+Quarantine & Restore
 
-# Scan without deleting (always the safe option)
-python cleaner.py --scan C:\Users\you\Downloads --cleaner dedupe
-python cleaner.py --scan C:\Users\you\Downloads --cleaner junk --json
-python cleaner.py --scan C:\Users\you\Desktop   --cleaner broken_shortcuts
-python cleaner.py --scan .                       --cleaner recycle
-python cleaner.py --scan .                       --cleaner downloads
-python cleaner.py --scan ~/Pictures              --cleaner similar_images --json
+PyCleaner's quarantine system stores processed files separately from the original directories.
 
---scan never deletes, never touches the quarantine manifest, never opens
-a window. --json produces structured output (includes data with the
-cleaner-specific payload) suitable for jq / pytest assertions.
-Example: JSON output
-json
+Default locations:
 
-[
-  {
-    "key": "C:\\Users\\you\\Downloads\\Thumbs.db",
-    "label": "Thumbs.db",
-    "path": "C:\\Users\\you\\Downloads\\Thumbs.db",
-    "size": 10240,
-    "note": "matches Thumbs.db",
-    "data": {}
-  }
-]
+Windows
 
-Fixture-based testing
 text
+%APPDATA%\PyCleaner\trash
 
-tests/
-├── fixtures/
-│   ├── dedupe/
-│   │   ├── a.txt            # content "hello"
-│   │   ├── b.txt            # content "hello"  → duplicate of a.txt
-│   │   ├── c.txt            # content "world"
-│   │   └── nested/a.txt     # content "hello"  → duplicate of a.txt
-│   ├── junk/
-│   │   ├── Thumbs.db
-│   │   └── keep.txt
-│   └── empty/
-│       └── a/b/c/           # nested empties
-└── test_cleaners.py
 
-python
+Linux/macOS
 
-def test_dedupe_finds_expected_duplicates():
-    result = subprocess.run(
-        ["python", "cleaner.py", "--scan", "tests/fixtures/dedupe",
-         "--cleaner", "dedupe", "--json"],
-        capture_output=True, text=True,
-    )
-    items = json.loads(result.stdout)
-    paths = sorted(Path(it["path"]).name for it in items)
-    assert paths == ["a.txt", "a.txt", "b.txt"]
-
-The trash / quarantine
-
-Location: %APPDATA%\PyCleaner\trash (Windows) or ~/.config/PyCleaner/trash
-(POSIX). App-wide, not per-scan-root — one trash folder regardless of how
-many different folders you scanned.
-Structure
 text
+~/.config/PyCleaner/trash
 
-trash/
-└── 20240115-093217/           # stamp: YYYYMMDD-HHMMSS
-    ├── manifest.json
-    ├── report.pdf
-    └── Thumbs-1.db            # "Thumbs.db" already existed in this stamp
 
-Manifest
-json
+Each quarantine session contains:
 
-{
-  "created": 1704100000.123,
-  "items": [
-    {
-      "original": "C:/Users/you/Downloads/report.pdf",
-      "trashed": "report.pdf",
-      "size": 1048576,
-      "kind": "file",
-      "cleaner": "dedupe"
-    },
-    {
-      "original": "C:/Users/you/Downloads/empty-dir",
-      "trashed": "",
-      "size": 0,
-      "kind": "dir",
-      "cleaner": "empty_folders"
-    }
-  ]
-}
+A timestamped directory.
+A manifest.json file.
+The quarantined files.
+Restoring files
+Open the Trash tab.
+Select the quarantine session.
+Click Restore.
+Files are moved back to their original locations.
 
-Restoring
-
-Select one or more stamps in the Trash tab, click Restore selected.
-
-    Each file is moved back to original. If it exists, that item is reported
-    as a conflict and stays in quarantine — nothing is overwritten.
-
-    Directories are recreated with mkdir -p.
-
-    If the stamp folder is empty afterward, it's deleted.
+If a file already exists at its original location, PyCleaner reports the conflict and leaves the quarantined copy untouched.
 
 Retention
 
-The default retention is 30 days. Purge older than Nd in the Trash tab
-runs purge_older_than(days) on demand. There's no background task —
-you must click the button. If you want automatic purging, add a startup hook
-that calls Quarantine().purge_older_than(settings["trash_retention_days"]).
-Manual inspection
+The default quarantine retention period is 30 days.
 
-Open folder opens the trash directory in Explorer / Finder / xdg-open.
-You can inspect files, copy them out, or delete them yourself — the app
-tolerates orphaned folders (it just skips them on the next stamps() call if
-manifest.json is missing).
-Configuration files
+You can manually purge older quarantine sessions through the Trash tab.
 
-All in %APPDATA%\PyCleaner (Windows) or ~/.config/PyCleaner (POSIX).
-File	Purpose
-settings.json	Dedupe mode, hash limit, retention days, junk patterns
-columns.json	Legacy column widths (fallback for dedupe)
-columns_<id>.json	Per-cleaner column widths
-appx_allowlist.json	Optional override for the AppX allowlist
-actions.log	Append-only action audit trail
-trash/	Quarantine with per-stamp manifests
-settings.json
-json
+Purging is separate from restoring and permanently removes quarantined data.
 
-{
-  "hash_limit_mb": 200,
-  "dedupe_mode": "content",
-  "trash_retention_days": 30,
-  "junk_patterns": null
-}
+Configuration
 
-junk_patterns: null means "use cleaner defaults". Any non-empty list
-replaces the defaults.
-actions.log
+PyCleaner stores its configuration in:
+
+Windows
+
 text
+%APPDATA%\PyCleaner
 
-2024-01-15 09:32:17 stash C:\Users\you\Downloads\report.pdf -> ...\report.pdf (dedupe)
-2024-01-15 09:32:18 appx remove Microsoft.BingNews_4.51.1291.0_x64__8wekyb3d8bbwe
-2024-01-15 09:32:19 uninstall-launch Foo App: "C:\Program Files\Foo\uninstall.exe" /gui
-2024-01-15 09:33:05 restore 20240115-093217\report.pdf -> C:\Users\you\Downloads\report.pdf
-2024-01-15 09:34:12 purge 20240115-093217
 
-Useful for debugging "did I delete this?" and for auditing bulk operations
-across a long-running session.
+Linux/macOS
+
+text
+~/.config/PyCleaner
+
+
+Configuration files include:
+
+File	Purpose
+settings.json	Application and cleaner settings
+columns.json	Legacy column configuration
+columns_<id>.json	Individual cleaner column widths
+appx_allowlist.json	Optional Store app allowlist
+actions.log	Action history
+trash/	Quarantined files and manifests
+Command-Line Usage
+
+PyCleaner also provides a headless command-line interface for scanning and testing cleaners without opening the graphical interface.
+
+List available cleaners:
+
+bash
+python main.py --list
+
+
+Scan a directory for duplicates:
+
+bash
+python main.py --scan ./Downloads --cleaner dedupe
+
+
+Scan for junk files:
+
+bash
+python main.py --scan ./Downloads --cleaner junk --json
+
+
+Scan for large files:
+
+bash
+python main.py --scan ./Downloads --cleaner large
+
+
+Scan for similar images:
+
+bash
+python main.py --scan ./Pictures --cleaner similar_images --json
+
+
+Important: CLI scan operations are read-only. They do not delete files or modify the quarantine manifest.
+
+The --json option outputs structured results for scripting and automated testing.
+
 Architecture
 
-Single file, ~3,000 lines, organized into clearly-commented sections. Splitting
-into modules is a mechanical change — the sections already don't cross-import.
+PyCleaner is built around a plugin-based cleaner architecture.
+
+The main components are:
+
+Component	Responsibility
+Cleaner	Base class for individual cleaners
+Item	Shared data structure for scan results
+CleanerTab	Generic Tkinter interface for cleaners
+CleanerApp	Main application and tab management
+Quarantine	File quarantine, restoration, and purging
+Settings	Configuration loading and saving
+
+New cleaners can be added by extending the Cleaner base class and registering the new cleaner.
+
+The generic interface handles scanning, progress reporting, selection, confirmation dialogs, and quarantine integration.
+
+Development
+
+Contributions and new cleaner ideas are welcome.
+
+When adding a cleaner, aim to:
+
+Follow the existing cleaner architecture.
+Respect protected system paths.
+Support cancellation during scanning.
+Avoid permanent deletion wherever possible.
+Provide clear descriptions of detected items.
+Include appropriate error handling.
+Test against fixture directories before using real data.
+Project structure
+
+The repository currently contains:
+
 text
+computer-cleaner/
+├── main.py
+├── column_widths.json
+└── README.md
 
-cleaner.py
-├── 1.  Config & constants
-├── 2.  Helpers (files, paths, registry, PowerShell)
-├── 3.  Data model (Item, Cleaner)
-├── 4.  File cleaners (dedupe, empty*, junk, old, large, temp)
-├── 5.  Windows cleaners (startup, programs, tasks, services, appx)
-├── 6.  Phase-5 cleaners (downloads, similar_images, shortcuts, recycle)
-├── 7.  Cleaner registry (dict of id → class)
-├── 8.  Quarantine
-├── 9.  Settings (load/save)
-├── 10. CleanerTab (the generic Tk tab)
-├── 11. CleanerApp (the notebook)
-└── 12. main() — argparse + headless CLI
+Known Limitations
+Some cleaners are Windows-only.
+Windows-specific functionality depends on PowerShell.
+Similar image detection requires optional dependencies.
+Network-drive scanning may be slower than local scanning.
+macOS and Linux support has not been tested as extensively as Windows.
+PyCleaner's quarantine is separate from the native operating system Trash.
+Emptying the Windows Recycle Bin is a bulk operation.
+Features intentionally excluded
 
-The plugin contract
+PyCleaner deliberately avoids:
 
-Every cleaner subclasses Cleaner and either overrides _scan_impl (returning
-a list of Item) or sets readonly = True and lists items some other way.
-Actions dispatch through apply_action(item, action, quarantine); bulk
-actions (empty recycle bin) go through apply_bulk(action, items, quarantine).
+Registry cleaners.
+RAM optimisers.
+Fake performance-boosting features.
+Silent application uninstalls.
+Automatic modification of Windows services.
+Unnecessary background processes.
 
-Item is the only shared data type between the cleaner and the tab:
-python
+The focus is on useful maintenance tools rather than misleading performance claims.
 
-@dataclass
-class Item:
-    key: str                    # grouping key or unique identifier
-    label: str                  # user-visible name
-    path: Path | None           # file/folder, or None for registry/package items
-    size: int = 0
-    mtime: float | None = None
-    note: str = ""              # free-form column text
-    checked: bool = False
-    iid: str | None = None      # set by the tab on insert
-    data: dict = field(default_factory=dict)  # cleaner-specific payload
-
-The data dict is where per-cleaner state lives — hash values, publisher,
-uninstall strings, package names, enabled flags. The tab never inspects it;
-only the cleaner's own render and apply methods do.
-The generic tab
-
-CleanerTab is instantiated once per cleaner class. It handles:
-
-    Folder picker (if requires_root = True)
-
-    Options rendering (from option_specs)
-
-    Threaded scan with progress and cancel
-
-    Tree rendering (flat or grouped by group_by)
-
-    Checkbox toggling, Check/Uncheck all, keep-by, right-click menu
-
-    Column width persistence (per-cleaner)
-
-    Preview pane (if preview_pane() returns a class)
-
-    Action dispatch (_run_action → apply_action or apply_bulk)
-
-    Result dialogs
-
-Adding a new cleaner means writing the subclass; zero changes to the tab.
-Threading model
-
-Scans run on a worker thread communicating via queue.Queue. The Tk main
-thread polls the queue every 80 ms (self.after(80, poll)) — no
-update_idletasks() hacks, no blocking calls on the UI thread. Cancel is a
-threading.Event the worker checks between files.
-
-Actions (apply, restore, purge) run synchronously on the UI thread. They
-touch few files and are fast; a threaded apply loop would be over-engineering
-and would complicate the result dialog. If a future action becomes slow, wrap
-it in _run_thread.
-Extending PyCleaner
-
-Adding a cleaner is a 3-step process. Here's a complete example — stale
-lockfiles (files named *.lock older than 7 days):
-python
-
-class StaleLockfilesCleaner(Cleaner):
-    id = "stale_locks"
-    name = "Stale lockfiles"
-    description = "*.lock files not modified in 7 days."
-    group_by = "none"
-    option_specs = [
-        {"key": "min_days", "label": "Older than (days)",
-         "kind": "int", "default": 7, "min": 1, "max": 365},
-    ]
-
-    def _scan_impl(self, root, opts, progress_cb, cancel):
-        days = int(opts.get("min_days", 7))
-        cutoff = time.time() - days * 86400
-        results = []
-        for p, size, mtime in self._walk(root, opts, self._errors):
-            if cancel.is_set():
-                break
-            if p.suffix.lower() == ".lock" and mtime < cutoff:
-                age = int((time.time() - mtime) / 86400)
-                results.append(Item(
-                    key=str(p), label=p.name, path=p, size=size,
-                    mtime=mtime, note=f"{age}d old"))
-        return results
-
-Then register it:
-python
-
-CLEANERS: dict[str, type[Cleaner]] = {
-    c.id: c for c in (
-        DedupeCleaner, EmptyFoldersCleaner, EmptyFilesCleaner,
-        JunkByNameCleaner, OldFilesCleaner, LargeFilesCleaner,
-        TempCacheCleaner, DownloadsCleaner,
-        StartupCleaner, ProgramsCleaner, ScheduledTasksCleaner,
-        ServicesCleaner, AppxCleaner,
-        SimilarImagesCleaner, BrokenShortcutsCleaner, RecycleBinCleaner,
-        StaleLockfilesCleaner,   # <── add here
-    )
-}
-
-That's it. The tab, folder picker, threading, column persistence, delete
-flow, trash integration, CLI --scan, and --list all work for free.
-Overriding defaults
-Attribute	Default	Override when
-requires_root	True	Cleaner scans fixed paths (temp dir, recycle bin)
-readonly	False	Viewer only (no checkboxes, no action buttons)
-auto_check	False	Everything should start selected (safe bulk cleaners)
-group_by	"key"	Flat list — set to "none"
-apply_removes_items	True	Rows should stay after applying (startup, programs)
-delete_verb / delete_noun	Delete / file(s)	Different language ("Remove", "folder(s)")
-platforms	None (any)	Windows-only: ("win32",)
-optional_deps	()	Requires pip packages: ("PIL", "imagehash")
-needs_admin	False	Tab won't work at all without admin
-admin_recommended	False	Some actions work better with admin (yellow banner)
-columns / column_headers	("path","size","modified","info")	Different column schema
-option_specs	[]	Per-tab options (spinbox, checkbox, entry)
-has_verify	False	Show "Verify content" button (dedupe only)
-has_keep_by	False	Right-click "Keep newest" menu
-preview_pane()	None	Return a class: _ImagePreview style
-Custom actions
-
-For cleaners with non-delete actions (startup, programs, appx, recycle):
-python
-
-def action_buttons(self):
-    return [
-        {"label": "Disable checked", "action": "disable"},
-        {"label": "Enable checked",  "action": "enable"},
-        {"label": "Empty all",       "action": "empty_all", "bulk": True},
-    ]
-
-def apply_action(self, item, action, quarantine):
-    if action == "disable":
-        return self._set_enabled(item, False)
-    if action == "enable":
-        return self._set_enabled(item, True)
-    return super().apply_action(item, action, quarantine)
-
-def apply_bulk(self, action, items, quarantine):
-    if action == "empty_all":
-        # bulk operation
-        return count, errors
-    return super().apply_bulk(action, items, quarantine)
-
-confirm_title(action) and confirm_text(action, items) let you customize
-the confirmation dialog per action.
 Troubleshooting
 
-"Some optional cleaners are missing."
-Install the deps listed on the Settings tab: pip install Pillow imagehash winshell. Or ignore it — those tabs simply won't appear.
+Missing cleaner tabs
 
-"PowerShell not found" (Windows).
-PowerShell 3+ is built into Windows 8+. If you're on Windows 7 or a stripped
-down install, install PowerShell from Microsoft. The AppX, tasks, services,
-and shortcut cleaners depend on it; the file cleaners don't.
+Install the optional dependencies required by the cleaner.
 
-The app hangs on scan of a huge folder.
-Cancel is available; use it. For multi-TB scans, run several targeted scans
-rather than one root. The dedupe content mode is much faster than the name
-mode for large trees because it only hashes files that share a size.
+bash
+pip install Pillow imagehash winshell
 
-"Cannot scan <path> (protected system path)."
-is_protected() refuses paths under C:\Windows, C:\Program Files,
-C:\ProgramData\Microsoft, etc. This is intentional. If you genuinely need
-to clean those paths, use Windows' own cleanmgr or a system-level tool.
-PyCleaner is a user-data cleaner, not a system cleaner.
 
-A file failed to move ("in use").
-Windows locks open files; POSIX unlinks them (the app sees them gone from the
-next scan, but the process holding the handle keeps reading from the inode).
-Close the app that has the file open and re-scan, or use the Windows
-Resource Monitor to find the lock holder.
+PowerShell not found
 
-Trash is growing, disk is full.
-Settings → trash_retention_days doesn't auto-purge; click Purge older than
-Nd in the Trash tab. Or click Purge selected on a specific stamp. Or open
-the folder and delete it manually — the app tolerates missing manifests.
+Install or enable a supported version of PowerShell. Windows-specific cleaners that depend on PowerShell will not work without it.
 
-Store app removal said "not found".
-The PackageFullName may have changed since the scan (Windows auto-updates
-apps). Re-scan and try again. Deprovisioning matches on PackageName (without
-the version suffix), which is more stable, but reinstalls can still move things.
+Files cannot be moved
 
-The UI is tiny/huge on a high-DPI screen.
-Tkinter doesn't scale automatically on Windows. Set the DPI awareness in
-main() before creating CleanerApp():
-python
+Some files may be locked by running applications. Close the application using the file and try again.
 
-if os.name == "nt":
-    import ctypes
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        pass
+Quarantine is taking up disk space
 
-FAQ
+Open the Trash tab and manually purge quarantine sessions you no longer need.
 
-Why is there no registry cleaner?
-Registry "cleaners" produce no measurable performance gain and are one of the
-top causes of Windows boot failures. The state-of-the-art answer from every
-serious systems engineer is "don't." PyCleaner won't.
+Scanning takes too long
 
-Why can't I disable services?
-Because services have dependencies, sc config changes are sticky, and
-disabling the wrong one requires Safe Mode to recover from. Use services.msc
-with a guide — it's safer and more educational.
-
-Why does the dedupe name mode exist if content mode is better?
-Because content mode hashes files, which is slow on huge trees, and name mode
-is ~50× faster on cold cache. Name mode is the right tool for "I copied my
-whole photo library twice and want to see the pairs before I delete the
-backup."
-
-Can I run PyCleaner on a network share?
-File cleaners yes, but slow (network round-trips for every stat). Windows
-registry-based cleaners are local-machine only. The trash folder is local; the
-files it stashes will be moved over the network to %APPDATA%, which may be
-slow or fail on read-only shares.
-
-Does removing a Store app break Windows?
-For apps in the low risk tier, no — they're end-user apps with no shell
-dependencies. For medium, you might notice a "missing" shortcut or two
-that a user actively relied on. For high, yes — removing the Store itself,
-winget's backend, or media codecs will break features. The confirmation dialog
-warns you. Removing Store apps is not a decision to make on someone else's
-machine without asking.
-
-Can I script the app?
-Not the GUI — it's Tkinter. But every cleaner's scan is scriptable via --scan --json, and apply/apply_bulk are public methods you can call from Python:
-python
-
-from cleaner import DedupeCleaner, Quarantine
-c = DedupeCleaner()
-items = c.scan(Path("/data"), {"recursive": True}, print, threading.Event())
-q = Quarantine()
-for it in items[:5]:
-    ok, msg = c.apply(it, q)
-    print(ok, msg)
-
-How do I uninstall PyCleaner?
-Delete cleaner.py. Delete %APPDATA%\PyCleaner (this also deletes the
-quarantine — restore first if you want to keep anything). Nothing is written
-to the registry, no services are installed, no PATH entries.
-Known limitations & non-goals
-Not implemented
-
-    Disk-usage treemap — needs a canvas renderer and drill-down navigation.
-    Would be a whole tab, not a cleaner. Different interaction model.
-
-    Near-duplicate videos — perceptual hashing for video is genuinely hard
-    (temporal alignment, resolution changes). Out of scope.
-
-    Broken registry uninstall entries — safe to flag, dangerous to delete.
-    Better as a "report" than a cleaner.
-
-    Scheduled task / service modification — read-only by design.
-
-Won't implement
-
-    Registry cleaner — no measurable gain, brick risk.
-
-    RAM optimiser — Windows manages memory fine.
-
-    "Boost PC" buttons — same.
-
-    Silent uninstalls — data loss waiting to happen.
-
-    Cloud sync — this is a local tool.
-
-Platform notes
-
-    Windows-only cleaners are: startup, programs, tasks, services, appx,
-    broken_shortcuts, recycle. The file-based cleaners work on macOS and Linux
-    but haven't been as heavily tested there.
-
-    macOS quarantine doesn't integrate with Finder's Trash — PyCleaner's
-    quarantine is a separate folder. Use it, then Cmd+Delete from Finder if
-    you want the real trash.
-
-    Linux — _is_hidden uses dot-prefix, which is the correct convention.
-
-Changelog
-Phase 5 (current)
-
-    Similar images cleaner with BK-tree clustering and a preview pane.
-
-    Broken shortcuts cleaner — .lnk resolution via PowerShell, no COM dep.
-
-    Recycle bin cleaner — read-only view + empty-all bulk action.
-
-    Downloads triage — ~/Downloads grouped by extension category.
-
-    Optional deps infrastructure — optional_deps attribute + --list output.
-
-    Preview pane hook — preview_pane() on Cleaner, wired into CleanerTab.
-
-    Bulk actions — apply_bulk() + "bulk": True button spec.
-
-    group_sort_key() — cleaner-defined group ordering.
-
-Phase 4
-
-    Store apps cleaner with risk-tiered curated allowlist.
-
-    admin_recommended flag (vs needs_admin) for softened banner.
-
-    row_tag() hook — per-row colouring (risk tiers).
-
-    confirm_text(action, items) signature (was n, size) for risk-counting.
-
-    apply_bulk() groundwork for recycle bin.
-
-Phase 3
-
-    Startup apps cleaner — reversible via StartupApproved.
-
-    Programs cleaner — launches vendor uninstallers.
-
-    Scheduled tasks / Services — read-only viewers.
-
-    Elevation infrastructure — is_admin(), relaunch_as_admin().
-
-    action_buttons(), apply_action(), render_row() hooks.
-
-    Per-action confirm_title / confirm_text.
-
-Phase 2
-
-    Empty folders, Empty files, Junk by name, Old files,
-    Large files, Temp & cache cleaners.
-
-    Generic CleanerTab — folder picker, options, threading, action dispatch.
-
-    Per-cleaner column layouts (columns_<id>.json).
-
-    option_specs for per-tab options.
-
-    _walk() extracted as shared file-walking primitive.
-
-    Headless CLI — --scan, --cleaner, --json.
-
-Phase 1
-
-    Plugin architecture (Cleaner, Item, CleanerTab).
-
-    Quarantine with manifest, restore, purge, retention.
-
-    Protected paths guard.
-
-    Dry run mode.
-
-    Threading for scan and hash with progress + cancel.
-
-    %APPDATA% config (was: next to the script).
-
-    Dedupe rebuilt on size→hash bucketing (was: name-only).
-
-    actions.log audit trail.
-
-    Trash tab. Settings tab.
+Try scanning smaller directories instead of scanning an entire drive.
 
 License
 
-MIT. Do whatever you want. No warranty — this tool deletes files
-(well, moves them to quarantine). If you point it at C:\ and click "check
-all" then "delete", the outcome is on you. The safety model exists to make
-that unlikely; it doesn't make it impossible.
-Acknowledgments
+This project is licensed under the MIT License.
 
-    The StartupApproved mechanism is undocumented but well-known; references
-    in this README come from observing Task Manager and the autoruns tool.
+You are free to use, modify, and distribute the software in accordance with the license.
 
-    The AppX allowlist draws from years of community lists (W4RH4WK, builtbybel,
-    Sycnex) — curated and reduced, not copied.
+Disclaimer: PyCleaner is provided without warranty. Always review selected files before performing maintenance operations. Although quarantine and dry-run functionality help reduce accidental data loss, no cleaning utility can guarantee that every operation is risk-free.
 
-    The BK-tree implementation is textbook; anyone who's taken a CS algorithms
-    course will recognise it.
+Acknowledgements
+Pillow and imagehash for image processing and perceptual hashing.
+The Python community for the libraries and tools that make this project possible.
+The open-source community for inspiration behind the quarantine-first approach.
 
-    The "quarantine-first, dry-run always" philosophy is borrowed from
-    trash-cli, bleachbit, and every sysadmin who's ever been burned by an
-    rm -rf with a bad variable.
+Developed by JacobAFoster
